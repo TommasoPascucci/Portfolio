@@ -23,7 +23,7 @@ I helped with some of the data cleaning and as a group decided how we wanted to 
 * 91.98% Accuracy
 * 95.81% / 4.34% F1
 * 99.86% / 2.26% Recall
-* 92.08% / 58.03% Precision
+* 92.08% / 58.03% Precision /a
 ![](/images/matrix.png)
 ![](/images/AUC.png)
 
