@@ -1,0 +1,586 @@
+---
+title: "EDA"
+author: "Tommaso Pascucci"
+date: "2024-09-29"
+output: 
+  html_document:
+    toc: true         # Enable TOC
+    toc_depth: 3      # Set depth of the TOC
+    toc_float: false  # Disable floating TOC (moves it to the top)
+    number_sections: true  # Enable numbered sections
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Introduction
+
+Project Goal:
+The primary goal of the Home Credit Default Risk project is to predict whether a customer will default on a loan. Home Credit, a financial institution, aims to broaden financial inclusion by offering loans to underserved populations. However, accurately assessing the risk of default is crucial for ensuring that loans are offered to those who can repay them, while minimizing the risk of lending to those who may default.
+
+Business Problem:
+Home Credit is currently using machine learning models to predict the probability that a loan applicant will default. This project seeks to improve upon their existing models by leveraging a rich dataset containing historical application and behavioral data. The primary business problem is to reduce the rate of defaults while ensuring that loans are approved for customers who are likely to repay.
+
+Key business questions include:
+
+Which features are most predictive of loan default?
+How can the model's accuracy in predicting loan default be improved using exploratory data analysis and feature engineering?
+What patterns or anomalies exist in the applicant data that might impact predictions?
+Analytic Problem:
+From an analytic perspective, the main challenge is identifying patterns in the data that distinguish between borrowers who repay their loans and those who do not. This involves:
+
+Handling missing data, outliers, and imbalanced classes.
+Transforming the data into a format suitable for machine learning models.
+Selecting and engineering features that are most relevant to predicting the target variable (loan default).
+Purpose of the EDA Notebook:
+The purpose of this Exploratory Data Analysis (EDA) notebook is to conduct a thorough examination of the data in order to gain insights into its structure, patterns, and any potential issues. The EDA process will help inform future modeling decisions by:
+
+Identifying key variables and relationships that are likely to be predictive of loan default.
+Handling missing values, outliers, and imbalanced data.
+Exploring potential correlations between features and the target variable.
+Merging and transforming various datasets to enhance the richness of the data.
+
+## Questions to Explore:
+* Is the target variable (loan default) imbalanced?
+
+* How often does default occur in the training data?
+What are the distributions of key features (such as loan amount, income, and credit history)?
+
+* Are there any outliers or skewed distributions that may need to be addressed?
+Are there any correlations between features and the target variable?
+
+* Which features are most strongly correlated with loan default, and could they be useful predictors?
+How much missing data is present in the datasets?
+
+* Which columns contain the most missing data, and how should we handle these missing values?
+How can the train dataset be enriched by merging it with transactional datasets (like bureau.csv and previous_application.csv)?
+
+* Does adding transactional data improve the predictive power of the model?
+Are there potential anomalies or data quality issues that need to be addressed?
+
+* Are there data entry errors or inconsistencies that may impact the analysis?
+
+
+
+
+# Description of the data
+
+```{r Loading files}
+#loading in libraries
+library(tidyverse)
+library(MatchIt) # Library for matching in R: Exact, CEM, Full Matching
+library(marginaleffects)
+library(dplyr)
+library(purrr)
+library(skimr)
+library(janitor)
+library(caret)
+
+#loading in CSV files
+application_test <- read_csv("application_test.csv", show_col_types = FALSE)
+application_train <- read_csv("application_train.csv", show_col_types = FALSE)
+bureau <- read_csv("bureau.csv", show_col_types = FALSE)
+bureau_balance <- read_csv("bureau_balance.csv", show_col_types = FALSE)
+credit_card_balance <- read_csv("credit_card_balance.csv", show_col_types = FALSE)
+homecredit_columns_description <- read_csv("HomeCredit_columns_description.csv", show_col_types = FALSE)
+installments_payments <- read_csv("installments_payments.csv", show_col_types = FALSE)
+pos_cash_balance <- read_csv("POS_CASH_balance.csv", show_col_types = FALSE)
+previous_application <- read_csv("previous_application.csv", show_col_types = FALSE)
+sample_submission <- read_csv("sample_submission.csv", show_col_types = FALSE)
+```
+```{r target variable}
+# View the distribution of the TARGET variable
+target_distribution <- application_train %>%
+  count(TARGET) %>%
+  mutate(Percentage = n / sum(n) * 100)
+
+print(target_distribution)
+
+
+# Plot the distribution
+ggplot(target_distribution, aes(x = factor(TARGET), y = Percentage, fill = factor(TARGET))) +
+  geom_bar(stat = 'identity') +
+  labs(title = 'Distribution of TARGET Variable', x = 'TARGET', y = 'Percentage') +
+  scale_fill_manual(values = c('0' = 'blue', '1' = 'red'), guide = "none")
+```
+```{r Relationship Between Target and Predictors}
+# Get a skim summary
+skim_summary <- skim(application_train)
+
+# Print the summary
+skim_summary
+
+# Identify numeric and categorical variables
+numeric_vars <- application_train %>% select(where(is.numeric)) %>% names()
+categorical_vars <- application_train %>% select(where(is.character)) %>% names()
+
+# Compute correlations with TARGET
+numeric_data <- application_train %>% select(all_of(numeric_vars))
+
+# Remove columns with near-zero variance or constant values
+numeric_data <- numeric_data %>% select_if(~ var(.) > 0)
+
+# Compute correlation with TARGET
+correlations <- numeric_data %>%
+  select(-TARGET) %>%
+  map_df(~ cor(., application_train$TARGET, use = "complete.obs"))
+
+# View the top predictors
+top_predictors <- correlations %>%
+  gather(key = "Variable", value = "Correlation") %>%
+  arrange(desc(abs(Correlation)))
+
+print(top_predictors)
+
+# Select top 5 predictors
+top_vars <- top_predictors$Variable[1:5]
+
+# Plot distributions
+for (var in top_vars) {
+  ggplot(application_train, aes(x = .data[[var]], fill = factor(TARGET))) +
+    geom_density(alpha = 0.5) +
+    labs(title = paste("Distribution of", var, "by TARGET"), x = var, y = "Density") +
+    theme_minimal() +
+    scale_fill_manual(values = c('0' = 'blue', '1' = 'red'), name = "TARGET")
+}
+
+# Function to calculate default rates
+calc_default_rate <- function(df, var) {
+  df %>%
+    group_by_at(var) %>%
+    summarise(
+      Count = n(),
+      DefaultRate = mean(TARGET) * 100
+    ) %>%
+    arrange(desc(DefaultRate))
+}
+
+# Example with NAME_EDUCATION_TYPE
+edu_default_rate <- calc_default_rate(application_train, "NAME_EDUCATION_TYPE")
+
+print(edu_default_rate)
+
+# Plot default rates for NAME_EDUCATION_TYPE
+ggplot(edu_default_rate, aes(x = reorder(NAME_EDUCATION_TYPE, -DefaultRate), y = DefaultRate)) +
+  geom_bar(stat = 'identity', fill = 'purple') +
+  coord_flip() +
+  labs(title = 'Default Rate by Education Type', x = 'Education Type', y = 'Default Rate (%)') +
+  theme_minimal()
+```
+
+```{r clearning}
+# Clean column names
+application_train <- application_train %>% clean_names()
+
+# Check for duplicates
+duplicates <- application_train %>% get_dupes()
+
+# Number of duplicate rows
+nrow(duplicates)
+```
+
+
+# Missing Data
+
+```{r missing data1}
+# Calculate missing data percentage
+missing_data <- application_train %>%
+  summarize_all(~ mean(is.na(.))) %>%
+  gather(key = "Variable", value = "MissingPercent") %>%
+  arrange(desc(MissingPercent))
+
+# Convert to percentage
+missing_data$MissingPercent <- missing_data$MissingPercent * 100
+
+# View variables with missing data
+print(missing_data)
+
+
+# Plot missing data
+ggplot(missing_data %>% filter(MissingPercent > 0), aes(x = reorder(Variable, -MissingPercent), y = MissingPercent)) +
+  geom_bar(stat = 'identity', fill = 'orange') +
+  coord_flip() +
+  labs(title = 'Percentage of Missing Data by Variable', x = 'Variable', y = 'Missing Percentage (%)') +
+  theme_minimal()
+
+
+
+# Impute numeric variables with median
+numeric_vars <- application_train %>% select(where(is.numeric)) %>% names()
+
+application_train[numeric_vars] <- application_train[numeric_vars] %>%
+  mutate_all(~ ifelse(is.na(.), median(., na.rm = TRUE), .))
+
+# Impute categorical variables with mode
+categorical_vars <- application_train %>% select(where(is.character)) %>% names()
+
+mode_impute <- function(x) {
+  x[is.na(x)] <- names(sort(table(x), decreasing = TRUE))[1]
+  return(x)
+}
+
+application_train[categorical_vars] <- application_train[categorical_vars] %>%
+  mutate_all(~ mode_impute(.))
+
+```
+
+```{r outliers1}
+# Check if DAYS_BIRTH column exists before proceeding
+if ("DAYS_BIRTH" %in% colnames(application_train)) {
+  # Convert DAYS_BIRTH to age in years
+  application_train <- application_train %>%
+    mutate(age_years = -DAYS_BIRTH / 365)
+  
+  # Continue with IQR and outlier detection as previously explained
+  Q1 <- quantile(application_train$age_years, 0.25, na.rm = TRUE)
+  Q3 <- quantile(application_train$age_years, 0.75, na.rm = TRUE)
+  IQR_age <- Q3 - Q1
+
+  lower_bound <- Q1 - 1.5 * IQR_age
+  upper_bound <- Q3 + 1.5 * IQR_age
+
+  outliers <- application_train %>%
+    filter(age_years < lower_bound | age_years > upper_bound)
+  
+  cat("Number of outliers in age_years:", nrow(outliers), "\n")
+
+  ggplot(application_train %>%
+           filter(age_years >= lower_bound & age_years <= upper_bound),
+         aes(x = age_years)) +
+    geom_histogram(binwidth = 1, fill = 'skyblue', color = 'black') +
+    labs(title = 'Age Distribution (Excluding Outliers)', x = 'Age (years)', y = 'Count') +
+    theme_minimal()
+} else {
+  cat("Error: 'DAYS_BIRTH' column not found in the dataset.")
+}
+```
+```{r factor}
+# Find all character columns
+categorical_vars <- sapply(application_train, is.character)
+
+# Convert those columns to factors
+application_train[categorical_vars] <- lapply(application_train[categorical_vars], as.factor)
+```
+
+
+```{r missing data}
+# Function to calculate missing data and percentage
+missing_data_summary <- function(data) {
+  total_rows <- nrow(data)
+  
+  # Calculate number and percentage of missing values per column
+  missing_summary <- data %>%
+    summarise_all(~ sum(is.na(.))) %>%
+    pivot_longer(cols = everything(), names_to = "column", values_to = "missing_count") %>%
+    mutate(missing_percentage = (missing_count / total_rows) * 100)
+  
+  return(missing_summary)
+}
+
+# List of all datasets
+datasets <- list(
+  application_train = application_train,
+  application_test = application_test,
+  bureau = bureau,
+  bureau_balance = bureau_balance,
+  credit_card_balance = credit_card_balance,
+  homecredit_columns_description = homecredit_columns_description,
+  installments_payments = installments_payments,
+  pos_cash_balance = pos_cash_balance,
+  previous_application = previous_application,
+  sample_submission = sample_submission
+)
+
+# Apply the missing data function to each dataset
+missing_summaries <- lapply(datasets, missing_data_summary)
+
+# Name each summary according to the dataset
+names(missing_summaries) <- names(datasets)
+
+# Display the missing data summary for each dataset
+missing_summaries
+```
+
+```{r Missing 2}
+
+
+# Skim function gives a summary of the data
+skim(application_train)
+
+# Janitor function to explore missing data
+missing_train <- application_train %>%
+  summarise(across(everything(), ~ sum(is.na(.)))) %>%
+  gather(key = "column", value = "missing_count") %>%
+  mutate(missing_percentage = (missing_count / nrow(application_train)) * 100) %>%
+  arrange(desc(missing_percentage))
+
+print(missing_train)
+
+# Potential solutions: Remove columns with more than 50% missing data
+clean_train <- application_train %>%
+  select_if(~ mean(is.na(.)) < 0.5)
+
+# Print columns removed
+removed_columns <- setdiff(names(application_train), names(clean_train))
+print(removed_columns)
+
+#Impute numeric columns with median
+imputed_train <- clean_train %>%
+  mutate(across(where(is.numeric), ~ ifelse(is.na(.), median(., na.rm = TRUE), .)))
+
+
+```
+
+# Exploratory visualizations and/or summary tables
+```{r distro}
+# Plot Target Distribution
+ggplot(target_distribution, aes(x = factor(TARGET), y = Percentage, fill = factor(TARGET))) +
+  geom_bar(stat = 'identity') +
+  labs(title = 'Distribution of TARGET Variable', x = 'TARGET', y = 'Percentage') +
+  scale_fill_manual(values = c('0' = 'blue', '1' = 'red'), guide = "none")
+```
+
+```{r corr}
+application_train <- read_csv("application_train.csv", show_col_types = FALSE)
+# Select numeric columns, excluding SK_ID_CURR because it's just an ID
+numeric_vars <- application_train %>% select(where(is.numeric)) %>% select(-SK_ID_CURR)
+
+# Calculate correlations between numeric variables and TARGET
+correlations <- numeric_vars %>%
+  summarise(across(everything(), ~ cor(., application_train$TARGET, use = "complete.obs")))
+
+# Transpose the result to make it easier to read
+correlations_t <- as.data.frame(t(correlations))
+
+# Add a column with variable names
+correlations_t <- rownames_to_column(correlations_t, var = "Variable")
+
+# Rename the correlation column for clarity
+colnames(correlations_t)[2] <- "Correlation"
+
+# Sort by absolute value of correlation to see which variables have the strongest relationships
+correlations_t <- correlations_t %>%
+  arrange(desc(abs(Correlation)))
+
+# Print the top correlations
+print(head(correlations_t, 10))
+
+# Select top 5 correlated variables
+top_vars <- correlations_t$Variable[1:5]
+
+# Plot distributions of the top 5 correlated variables by TARGET
+for (var in top_vars) {
+  p <- ggplot(application_train, aes_string(x = var, fill = "factor(TARGET)")) +
+    geom_density(alpha = 0.5) +
+    labs(title = paste("Distribution of", var, "by TARGET"), x = var, y = "Density") +
+    theme_minimal() +
+    scale_fill_manual(values = c('0' = 'blue', '1' = 'red'), name = "TARGET") +
+    theme(legend.position = "top")
+  
+  print(p)  # Explicitly print the plot in the loop
+}
+
+
+```
+
+```{r Z score}
+# Calculate Z-scores for key numeric variables
+application_train <- application_train %>%
+  mutate(z_score_income = scale(AMT_INCOME_TOTAL),
+         z_score_credit = scale(AMT_CREDIT),
+         z_score_employed = scale(DAYS_EMPLOYED))
+
+# Identify outliers where z-scores are beyond 3 standard deviations
+outliers <- application_train %>%
+  filter(abs(z_score_income) > 3 | abs(z_score_credit) > 3 | abs(z_score_employed) > 3)
+
+# Count number of outliers
+n_outliers <- nrow(outliers)
+cat("Number of outliers detected: ", n_outliers, "\n")
+
+# Boxplot to visualize outliers
+ggplot(application_train, aes(x = TARGET, y = AMT_CREDIT, fill = TARGET)) +
+  geom_boxplot() +
+  labs(title = "Boxplot of AMT_CREDIT with Outliers", x = "TARGET", y = "AMT_CREDIT") +
+  theme_minimal()
+```
+
+
+
+```{r outliers}
+application_train <- read_csv("application_train.csv", show_col_types = FALSE)
+# Step 1: Check for missing values in AMT_INCOME_TOTAL
+sum(is.na(application_train$AMT_INCOME_TOTAL))
+
+# Step 2: Calculate Z-scores for AMT_INCOME_TOTAL
+mean_income <- mean(application_train$AMT_INCOME_TOTAL, na.rm = TRUE)
+sd_income <- sd(application_train$AMT_INCOME_TOTAL, na.rm = TRUE)
+
+# Add a z-score column to the dataset
+application_train <- application_train %>%
+  mutate(z_score_income = (AMT_INCOME_TOTAL - mean_income) / sd_income)
+
+# Step 3: Filter out the outliers based on z-scores
+# Retain data where the absolute z-score is less than or equal to 3
+clean_income <- application_train %>%
+  filter(abs(z_score_income) <= 3)
+
+# Step 4: Plot the boxplot for the cleaned data
+boxplot(clean_income$AMT_INCOME_TOTAL, main = "Boxplot of Income Total (Without Outliers)", 
+        ylab = "Income Total", col = "skyblue")
+```
+
+
+## Join
+```{r Joins}
+# Aggregate bureau data by SK_ID_CURR
+bureau_agg <- bureau %>%
+  group_by(SK_ID_CURR) %>%
+  summarise(
+    bureau_credit_count = n(),
+    total_credit_amount = sum(AMT_CREDIT_SUM, na.rm = TRUE),
+    avg_credit_duration = mean(DAYS_CREDIT, na.rm = TRUE)
+  )
+
+# Clean column names
+#bureau_agg <- bureau_agg %>% clean_names()
+
+# Merge with application_train
+application_train <- application_train %>%
+  left_join(bureau_agg, by = "SK_ID_CURR")
+
+# Replace NAs with 0
+application_train$bureau_credit_count[is.na(application_train$bureau_credit_count)] <- 0
+application_train$total_credit_amount[is.na(application_train$total_credit_amount)] <- 0
+application_train$avg_credit_duration[is.na(application_train$avg_credit_duration)] <- 0
+```
+
+
+```{r Joins explore}
+# Correlation with TARGET
+new_features <- c("bureau_credit_count", "total_credit_amount", "avg_credit_duration")
+
+correlations_new <- application_train %>%
+  select(all_of(new_features)) %>%
+  map_df(~ cor(., application_train$TARGET, use = "complete.obs"))
+
+print(correlations_new)
+
+# Plot bureau_credit_count vs TARGET
+ggplot(application_train, aes(x = bureau_credit_count, fill = factor(TARGET))) +
+  geom_histogram(binwidth = 1, position = "dodge") +
+  labs(title = 'Bureau Credit Count by TARGET', x = 'Bureau Credit Count', y = 'Count') +
+  scale_fill_manual(values = c('0' = 'blue', '1' = 'red'), name = "TARGET") +
+  theme_minimal()
+
+```
+
+
+
+```{r forest}
+# Load randomForest package
+library(randomForest)
+
+# Convert TARGET to factor if it's categorical
+application_train$TARGET <- as.factor(application_train$TARGET)
+
+# Build a simple random forest model for classification
+rf_model <- randomForest(
+  TARGET ~ AMT_INCOME_TOTAL + AMT_CREDIT + bureau_credit_count + total_credit_amount,
+  data = application_train,
+  importance = TRUE,
+  ntree = 100
+)
+
+# Check importance
+importance(rf_model)
+
+# Variable importance for classification (uses MeanDecreaseGini)
+importance_df <- data.frame(
+  Feature = rownames(rf_model$importance),
+  Importance = rf_model$importance[, 'MeanDecreaseGini']
+)
+
+# Plot variable importance
+ggplot(importance_df, aes(x = reorder(Feature, Importance), y = Importance)) +
+  geom_bar(stat = 'identity', fill = 'darkorange') +
+  coord_flip() +
+  labs(title = 'Feature Importance from Random Forest', x = 'Feature', y = 'Importance') +
+  theme_minimal()
+
+# Build a random forest regression model if TARGET is continuous
+rf_model <- randomForest(
+  TARGET ~ AMT_INCOME_TOTAL + AMT_CREDIT  + bureau_credit_count + total_credit_amount,
+  data = application_train,
+  importance = TRUE,
+  ntree = 100
+)
+
+# Extract importance using available metric
+importance_df <- data.frame(
+  Feature = rownames(rf_model$importance),
+  Importance = rf_model$importance[, 'MeanDecreaseAccuracy']  # Change to 'MeanDecreaseAccuracy' or 'MeanDecreaseGini' if available
+)
+
+# Plot variable importance for regression
+ggplot(importance_df, aes(x = reorder(Feature, Importance), y = Importance)) +
+  geom_bar(stat = 'identity', fill = 'darkorange') +
+  coord_flip() +
+  labs(title = 'Feature Importance from Random Forest (Regression)', x = 'Feature', y = 'Importance') +
+  theme_minimal()
+
+```
+```{r lm}
+# Load necessary libraries
+library(caret)
+library(dplyr)
+
+# Ensure TARGET is binary (0, 1)
+application_train$TARGET <- as.factor(application_train$TARGET)
+
+# Convert all character columns to factors
+application_train <- application_train %>%
+  mutate(across(where(is.character), as.factor))
+
+# Impute missing values for numeric columns (median)
+application_train <- application_train %>%
+  mutate(across(where(is.numeric), ~ ifelse(is.na(.), median(., na.rm = TRUE), .)))
+
+# Normalize numeric columns to handle extreme values or scaling issues
+numeric_cols <- application_train %>%
+  select(where(is.numeric)) %>%
+  names()
+
+application_train[numeric_cols] <- scale(application_train[numeric_cols])
+
+# Remove any remaining rows with missing values
+application_train <- na.omit(application_train)
+
+# Train a simple logistic regression model with weights for class imbalance
+logit_model <- train(
+  TARGET ~ AMT_INCOME_TOTAL + AMT_CREDIT + DAYS_BIRTH + DAYS_EMPLOYED + bureau_credit_count + total_credit_amount + avg_credit_duration,
+  data = application_train,
+  method = "glm",
+  family = binomial(link = "logit"),
+  trControl = trainControl(method = "cv", number = 5),
+  weights = ifelse(application_train$TARGET == 1, 10, 1)  # Handle class imbalance with weights
+)
+
+# Output model summary
+summary(logit_model)
+
+# Get coefficients
+coefficients <- summary(logit_model$finalModel)$coefficients
+coefficients
+
+
+```
+
+
+# Results Section
+
+After conducting an exploratory data analysis on the Home Credit Default Risk dataset, several key findings emerged that can enhance predictive modeling and credit risk assessment for Home Credit. The target variable indicating loan default is highly imbalanced, with approximately 92% of applicants not defaulting and 8% defaulting, suggesting the need for techniques to address class imbalance in predictive models. The dataset contains a mix of numeric and categorical variables, with some variables exhibiting a high percentage of missing values—over 60% in certain cases—necessitating careful handling through imputation or removal to maintain data integrity. Correlation analysis identified several variables significantly associated with loan default; notably, younger applicants (as indicated by the 'DAYS_BIRTH' variable) tend to have a higher likelihood of default, and applicants from regions with lower ratings also show increased default rates. Education level emerged as a critical factor, with applicants possessing lower education levels demonstrating higher default rates, suggesting that education is a valuable predictor of credit risk. Feature engineering by merging additional datasets, such as the bureau data, allowed for the creation of new variables like 'bureau_credit_count' and 'total_credit_amount', which showed potential in enhancing model predictive power. Random forest models highlighted the importance of variables such as 'total_credit_amount' and 'AMT_CREDIT' in predicting defaults. Overall, addressing data imbalance, handling missing values appropriately, treating outliers, and selecting significant features are essential steps that can improve the accuracy of predictive models, aiding Home Credit in making informed lending decisions while effectively managing risk.
+
+
+
