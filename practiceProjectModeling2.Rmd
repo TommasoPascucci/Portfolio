@@ -1,0 +1,451 @@
+---
+title: "Modeling Assignment"
+author: "Nick Goshev, Chris Joyce, Tommaso Pascucci"
+date: "`r Sys.Date()`"
+output: 
+  html_document:
+    number_sections: yes
+    toc: yes
+editor_options: 
+  chunk_output_type: inline
+---
+# setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(readxl)
+library(tidyverse)
+library(C50)
+library(caret)
+library(rminer)
+library(knitr)
+library(rpart)
+library(rpart.plot)
+library(e1071)
+library(ggplot2)
+library(kernlab)
+library(matrixStats)
+library(RWeka)
+library(psych)
+library(randomForest)
+library(xgboost)
+library(pROC)
+library(Matrix)
+
+
+
+
+
+```
+# Data preparation
+
+```{r}
+df <- read.csv("application_train.csv",stringsAsFactors = TRUE)
+head(df)
+df <- df[,-1]
+```
+
+## chi2 testing to remove variables with low association with target
+```{r}
+
+to_remove <- c()
+
+for(index in c(2:121)){
+  
+contingency_table <- table(df[,1], df[,index])
+  
+chi_test <- chisq.test(contingency_table)
+
+  if(chi_test$p.value > 0.01){
+    to_remove <- c(to_remove, index)
+  }
+}
+
+df_filtered <- df[,-to_remove]
+```
+
+
+## examining null data and removing columns with extremely high null percentages 
+
+```{r}
+total <- colSums(is.na(df_filtered))
+
+# Calculate the percentage of missing values for each column
+percent <- (colSums(is.na(df_filtered)) / nrow(df_filtered)) * 100
+
+# Combine total and percent into a data frame
+missing_application_train_data <- data.frame(Total = total,Percent = percent)
+
+
+missing_application_train_data <- missing_application_train_data[order(-missing_application_train_data$Total), ]
+
+print(missing_application_train_data)
+
+kept <- missing_application_train_data %>% filter(Percent < 20) %>% select() %>% labels()
+
+kept <- unlist(kept[[1]])
+
+df_filtered <- df[,kept] %>% mutate(TARGET=df$TARGET)
+```
+
+## factoring binary columns
+```{r}
+df_filtered %>% summary()
+
+
+unique_counts <- sort(lengths(lapply(df_filtered, unique)))
+binary_columns <- names(unique_counts[unique_counts==2])
+
+df_filtered[binary_columns] <- lapply(df_filtered[binary_columns], factor)
+```
+
+## removing columns with extremely high correlations amongst each other
+```{r}
+corr_matrix <- cor(df_filtered %>% select(where(is.numeric)), use = "pairwise.complete.obs")
+
+high_corr <- findCorrelation(corr_matrix, cutoff = 0.95)
+
+df_filtered <- df_filtered[,-high_corr]
+```
+
+## imputing the missing data for the remaining columns using multiple imputation
+```{r}
+library(mice)
+
+imputed_data <- mice(df_filtered, m = 5, maxit = 5, seed = 500, ridge = 0.1)
+
+df_imputed <- complete(imputed_data)
+
+sum(is.na(df_imputed))
+
+```
+
+
+
+# modeling
+
+```{r}
+df <- read.csv("PracticeProjectImputed.csv",stringsAsFactors = TRUE)
+df$TARGET <- df$TARGET %>% factor()
+df %>% head()
+```
+### train/test split
+```{r}
+set.seed(100)
+inTrain <- createDataPartition(df$TARGET, p=0.7, list=FALSE)
+
+df_train <- df[inTrain,]
+df_test <- df[-inTrain,]
+
+```
+
+## Random Forest
+col 38 is being excluded here due to having 58 levels, random forest does not work with categorical variables over 53 unique levels.
+### default
+```{r}
+
+rf_default <- randomForest(TARGET ~ ., data = df_train[,-38])
+
+predictions_train <- predict(rf_default,df_train)
+predictions_test <- predict(rf_default,df_test)
+
+```
+
+```{r}
+
+mmetric(df_train$TARGET, predictions_train, metric=c("ACC","TPR","PRECISION","F1"))
+
+mmetric(df_test$TARGET, predictions_test, metric=c("ACC","TPR","PRECISION","F1"))
+```
+although the performance was relatively good on the train set the default model is grossly overfit, and not likely to generalize well. We should adjust hyperparameters to attempt to reconcile this gap between the train and test performance. Also the true positive rate for class 2 is alarmingly low in this case.
+### larger terminal nodes
+```{r}
+rf_bignodes <- randomForest(TARGET ~ ., data = df_train, nodesize=200)
+predictions_train <- predict(rf_bignodes,df_train)
+predictions_test <- predict(rf_bignodes,df_test)
+```
+these adjustments were done to attempt to reduce overfitting of the model by ensuring a large number of observations in each node.
+```{r}
+
+mmetric(df_train$TARGET, predictions_train, metric=c("ACC","TPR","PRECISION","F1"))
+
+mmetric(df_test$TARGET, predictions_test, metric=c("ACC","TPR","PRECISION","F1"))
+```
+very similar performance on test set, but slightly lowered on train, the accuracy for train and test was extremely similar which indicates that the model generalizes well. However it appears to be guessing as a majority classifier, which is not very beneficial, we want to be able to capture observations from both classes.
+
+#### changed thresholds with big nodesize
+```{r}
+rf_bignodes <- randomForest(TARGET ~ ., data = df_train[,-38], nodesize=200, cutoff=c(0.92,0.08) )
+predictions_train <- predict(rf_bignodes,df_train)
+predictions_test <- predict(rf_bignodes,df_test)
+```
+the threshhold was changed to 0.08 as that is very close to the proportion of observations that are class 2, we want to retain the high nodesize to increase the probability of capturing class 2 as it is very rare. At a threshold of 0.8 that indicates that if the node has class 2 at a higher rate than average it may be at risk and should be classified as such in an attempt to increase true positive rate of class 2.
+
+```{r}
+
+mmetric(df_train$TARGET, predictions_train, metric=c("ACC","TPR","PRECISION","F1"))
+
+mmetric(df_test$TARGET, predictions_test, metric=c("ACC","TPR","PRECISION","F1"))
+```
+The accuracy for the train set and test set is much closer than that of the default tree while still remaining competitive with the testing default. This parameter adjustment had the added benefit of having a much higher tpr for class 2 but it is still very low at 6.4%.
+
+### Lowering tree depth
+```{r}
+rf_bignodes <- randomForest(TARGET ~ ., data = df_train[,-38], maxnodes=50)
+predictions_train <- predict(rf_bignodes,df_train)
+predictions_test <- predict(rf_bignodes,df_test)
+```
+Another way to attempt to address the overfitting is by lowering the depth of the trees. Ideally this will also result in a better true positive rate than the increased node size as well.
+```{r}
+
+mmetric(df_train$TARGET, predictions_train, metric=c("ACC","TPR","PRECISION","F1"))
+
+mmetric(df_test$TARGET, predictions_test, metric=c("ACC","TPR","PRECISION","F1"))
+```
+Similarly to the original larger noded model this is essentially acting as a majority classifier, I will try adding the thresholding here as well to see if I can increase the TPR2.
+
+#### lowering threshold for class 2
+
+```{r}
+rf_bignodes <- randomForest(TARGET ~ ., data = df_train[,-38], maxnodes=50, cutoff=c(0.92,0.08) )
+predictions_train <- predict(rf_bignodes,df_train)
+predictions_test <- predict(rf_bignodes,df_test)
+```
+
+```{r}
+
+mmetric(df_train$TARGET, predictions_train, metric=c("ACC","TPR","PRECISION","F1"))
+
+mmetric(df_test$TARGET, predictions_test, metric=c("ACC","TPR","PRECISION","F1"))
+```
+Even with implementing such drastic thresholds this iteration of the model is still classifying as a majority classifier, I believe the way to rectify this would be to increase the maxnodes count.
+
+### observations
+I believe the big node forest with thresholding is the best way so far for predicting. The accuracy rates are close to the majority classifier, which is already at a very high >90%, while also sporting the highest true positive rate for class 2 by a large margin. In future tests I plan to experiment with reducing features per tree and adding weighting as the next steps to reduce overfitting and to increase TPR2
+#### variable importance within rf
+```{r}
+varImp(rf_default)
+```
+it looks like the most important variables by a large margin are the external source normalization scores which refer to risk of the observation.
+
+# Train/ test 2
+```{r Split data, echo=FALSE}
+
+trainIndex <- createDataPartition(df$TARGET, p = 0.8, list = FALSE, times = 1)
+trainData <- df[trainIndex, ]
+testData <- df[-trainIndex, ]
+
+```
+
+## Logistic Regression
+
+the logistic regression didnt seem to have any improvement over the majority classifier
+```{r}
+model <- glm(TARGET ~ ., data = trainData, family = binomial)
+
+# Display summary
+summary(model)
+
+### TEST SET EVALUATION ###
+
+# Predict probabilities on the test data
+test_probabilities <- predict(model, newdata = testData, type = "response")
+
+# Predict class labels using a threshold of 0.5
+test_predicted_classes <- ifelse(test_probabilities > 0.5, 1, 0)
+
+# Create confusion matrix for the test set
+test_confusion <- table(Predicted = test_predicted_classes, Actual = testData$TARGET)
+print("Test Set Confusion Matrix:")
+print(test_confusion)
+
+# Calculate accuracy for test set
+test_accuracy <- sum(diag(test_confusion)) / sum(test_confusion)
+print(paste("Test Accuracy:", round(test_accuracy, 4)))
+
+# Calculate recall for test set
+test_recall <- test_confusion[2, 2] / (test_confusion[2, 2] + test_confusion[2, 1])
+print(paste("Test Recall:", round(test_recall, 4)))
+
+# Calculate precision for test set
+test_precision <- test_confusion[2, 2] / (test_confusion[2, 2] + test_confusion[1, 2])
+print(paste("Test Precision:", round(test_precision, 4)))
+
+# Calculate F1 score for test set
+test_f1_score <- 2 * ((test_precision * test_recall) / (test_precision + test_recall))
+print(paste("Test F1 Score:", round(test_f1_score, 4)))
+
+# Calculate AUC for test set
+testData$TARGET <- as.numeric(as.character(testData$TARGET))
+roc_obj_test <- roc(testData$TARGET, test_probabilities)
+test_auc <- auc(roc_obj_test)
+print(paste("Test AUC:", round(test_auc, 4)))
+
+
+### TRAINING SET EVALUATION ###
+
+# Predict probabilities on the training data
+train_probabilities <- predict(model, newdata = trainData, type = "response")
+
+# Predict class labels using a threshold of 0.5
+train_predicted_classes <- ifelse(train_probabilities > 0.5, 1, 0)
+
+# Create confusion matrix for the training set
+train_confusion <- table(Predicted = train_predicted_classes, Actual = trainData$TARGET)
+print("Training Set Confusion Matrix:")
+print(train_confusion)
+
+# Calculate accuracy for training set
+train_accuracy <- sum(diag(train_confusion)) / sum(train_confusion)
+print(paste("Train Accuracy:", round(train_accuracy, 4)))
+
+# Calculate recall for training set
+train_recall <- train_confusion[2, 2] / (train_confusion[2, 2] + train_confusion[2, 1])
+print(paste("Train Recall:", round(train_recall, 4)))
+
+# Calculate precision for training set
+train_precision <- train_confusion[2, 2] / (train_confusion[2, 2] + train_confusion[1, 2])
+print(paste("Train Precision:", round(train_precision, 4)))
+
+# Calculate F1 score for training set
+train_f1_score <- 2 * ((train_precision * train_recall) / (train_precision + train_recall))
+print(paste("Train F1 Score:", round(train_f1_score, 4)))
+
+# Calculate AUC for training set
+trainData$TARGET <- as.numeric(as.character(trainData$TARGET))
+roc_obj_train <- roc(trainData$TARGET, train_probabilities)
+train_auc <- auc(roc_obj_train)
+print(paste("Train AUC:", round(train_auc, 4)))
+```
+
+
+## XGBoost
+
+This still follows quite closely the majority classier as the accuraty was essentially the same though based on the AUC and F1 score this was an improvment over the logistic regression.
+```{r}
+# Split data into features and target
+#target <- PracticeProjectImputed$TARGET
+
+# Split data into training and testing sets (80% train, 20% test)
+#trainIndex <- createDataPartition(target, p = 0.8, list = FALSE)
+#trainData <- PracticeProjectImputed[trainIndex, ]
+#testData  <- PracticeProjectImputed[-trainIndex, ]
+
+# Separate labels
+train_label <- trainData$TARGET
+trainData$TARGET <- NULL
+
+test_label <- testData$TARGET
+testData$TARGET <- NULL
+
+# Convert character columns to factors
+char_cols <- sapply(trainData, is.character)
+trainData[char_cols] <- lapply(trainData[char_cols], as.factor)
+testData[char_cols] <- lapply(testData[char_cols], as.factor)
+
+# Create model matrices (one-hot encoding for categorical variables)
+formula <- as.formula("~ . -1")  # -1 removes the intercept
+train_matrix <- sparse.model.matrix(formula, data = trainData)
+test_matrix <- sparse.model.matrix(formula, data = testData)
+
+# Create DMatrix objects for XGBoost
+dtrain <- xgb.DMatrix(data = train_matrix, label = train_label)
+dtest <- xgb.DMatrix(data = test_matrix, label = test_label)
+
+# Set XGBoost parameters
+params <- list(
+  booster = "gbtree",
+  objective = "binary:logistic",
+  eval_metric = "auc"
+)
+
+# Perform cross-validation to find the optimal number of boosting rounds
+cv_model <- xgb.cv(
+  params = params,
+  data = dtrain,
+  nrounds = 100,
+  nfold = 5,
+  metrics = "auc",
+  stratified = TRUE,
+  early_stopping_rounds = 10,
+  verbose = TRUE
+)
+
+best_nrounds <- cv_model$best_iteration
+
+# Train the final model using the optimal number of rounds
+bst_model <- xgb.train(
+  params = params,
+  data = dtrain,
+  nrounds = best_nrounds,
+  watchlist = list(train = dtrain, eval = dtest),
+  early_stopping_rounds = 10,
+  verbose = TRUE
+)
+
+### TEST SET EVALUATION ###
+
+# Make predictions on the test set
+test_preds <- predict(bst_model, dtest)
+test_pred_labels <- ifelse(test_preds > 0.5, 1, 0)
+
+# Evaluate model performance on test set
+test_conf_mat <- confusionMatrix(factor(test_pred_labels), factor(test_label))
+cat("Test Set Confusion Matrix:\n")
+print(test_conf_mat)
+
+# Extract metrics for test set
+test_accuracy <- test_conf_mat$overall["Accuracy"]
+test_precision <- test_conf_mat$byClass["Pos Pred Value"]
+test_recall <- test_conf_mat$byClass["Sensitivity"]
+test_f1_score <- 2 * ((test_precision * test_recall) / (test_precision + test_recall))
+
+# Compute ROC and AUC for test set
+roc_obj_test <- roc(test_label, test_preds)
+test_auc <- auc(roc_obj_test)
+
+# Display test set metrics
+cat("Test Set Performance:\n")
+cat("Accuracy:", round(test_accuracy, 4), "\n")
+cat("Precision:", round(test_precision, 4), "\n")
+cat("Recall:", round(test_recall, 4), "\n")
+cat("F1 Score:", round(test_f1_score, 4), "\n")
+cat("AUC:", round(test_auc, 4), "\n")
+
+# Plot ROC curve for test set
+plot(roc_obj_test, main = paste0("Test ROC Curve (AUC = ", round(test_auc, 4), ")"))
+
+### TRAINING SET EVALUATION ###
+
+# Make predictions on the training set
+train_preds <- predict(bst_model, dtrain)
+train_pred_labels <- ifelse(train_preds > 0.5, 1, 0)
+
+# Evaluate model performance on training set
+train_conf_mat <- confusionMatrix(factor(train_pred_labels), factor(train_label))
+cat("Training Set Confusion Matrix:\n")
+print(train_conf_mat)
+
+# Extract metrics for training set
+train_accuracy <- train_conf_mat$overall["Accuracy"]
+train_precision <- train_conf_mat$byClass["Pos Pred Value"]
+train_recall <- train_conf_mat$byClass["Sensitivity"]
+train_f1_score <- 2 * ((train_precision * train_recall) / (train_precision + train_recall))
+
+# Compute ROC and AUC for training set
+roc_obj_train <- roc(train_label, train_preds)
+train_auc <- auc(roc_obj_train)
+
+# Display training set metrics
+cat("Training Set Performance:\n")
+cat("Accuracy:", round(train_accuracy, 4), "\n")
+cat("Precision:", round(train_precision, 4), "\n")
+cat("Recall:", round(train_recall, 4), "\n")
+cat("F1 Score:", round(train_f1_score, 4), "\n")
+cat("AUC:", round(train_auc, 4), "\n")
+
+# Plot ROC curve for training set
+plot(roc_obj_train, main = paste0("Train ROC Curve (AUC = ", round(train_auc, 4), ")"))
+
+```
+
