@@ -5,7 +5,7 @@ IS 6812 Portfolio
 # Kaggle Home Credit Default Risk
 
 ## [EDA](https://github.com/TommasoPascucci/Portfolio/blob/main/EDA.Rmd)
-
+Exploring the data set and the importance of the various variables
 ![](/images/Age.png)
 
 ## [Modeling](https://github.com/TommasoPascucci/Portfolio/blob/main/practiceProjectModeling2.Rmd)
