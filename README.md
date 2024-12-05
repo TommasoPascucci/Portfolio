@@ -11,22 +11,37 @@ The Home Credit Default Risk project focuses on predicting the likelihood of a c
 ## solution to a business problem
 
 ## My contribution
-Logistic Regression
-XGBoost model
+I helped with some of the data cleaning and as a group decided how we wanted to handle missing values so that we all worked on the same cleaned data set when creating the models. I focused on creating the logistic regression and XGBoost models. With the XGboost being the one that achieved our best Kaggle score of 0.69889.
+
+### Logistic Regression
+* 91.93% Accuracy
+* 2.09% F1
+* 50% Recall
+* 1.07% Precision
+* 
+### XGBoost model
+* 91.98% Accuracy
+* 95.81% / 4.34% F1
+* 99.86% / 2.26% Recall
+* 92.08% / 58.03% Precision
+![](/images/matrix.png)
+![](/images/AUC.png)
+
+### [EDA](https://github.com/TommasoPascucci/Portfolio/blob/main/EDA.Rmd)
+Exploring the data set and the importance of the various variables
+![](/images/Age.png)
+
+### [Modeling](https://github.com/TommasoPascucci/Portfolio/blob/main/practiceProjectModeling2.Rmd)
+XGboost
 
 ## Business value of the solution
 A reliable predictive model will help Home Credit make better loan approval decisions, reducing the risk of defaults while extending credit to more responsible clients. This will improve profitability, streamline the approval process, and enhance customer satisfaction by offering loans to applicants who may have been previously overlooked.
 
 ## Diffuiculties
-class imblance and variable importance
+There were a variate of challenges though we predominantly focused on data cleaning and handling 
+Handling class imbalance was quite challenging  and variable importance
 
 ## Learnings
+Spending more time at the beginning cleaning data and identifying important features makes it easier to work on building models. This also allows for more time for hyper parameter tuning 
 
-
-## [EDA](https://github.com/TommasoPascucci/Portfolio/blob/main/EDA.Rmd)
-Exploring the data set and the importance of the various variables
-![](/images/Age.png)
-
-## [Modeling](https://github.com/TommasoPascucci/Portfolio/blob/main/practiceProjectModeling2.Rmd)
-XGboost
 
