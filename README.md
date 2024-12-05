@@ -1,4 +1,5 @@
 # Portfolio
+Tommaso Pascucci
 IS 6812 Portfolio
 
 # Kaggle Home Credit Default Risk
@@ -6,4 +7,5 @@ IS 6812 Portfolio
 ## [EDA](https://github.com/TommasoPascucci/Portfolio/blob/main/EDA.Rmd)
 
 ## [Modeling](https://github.com/TommasoPascucci/Portfolio/blob/main/practiceProjectModeling2.Rmd)
+XGboost
 
