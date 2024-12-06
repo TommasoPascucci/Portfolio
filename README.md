@@ -13,7 +13,7 @@ The primary goal of this project is to build a robust machine-learning model tha
 * Streamline the loan approval process by identifying low-risk customers.
 * Enable better financial inclusion by extending credit to applicants who are responsible but lack traditional credit profiles.
 
-## solution to a business problem
+## [solution to a business problem](https://github.com/CSJoyce/HomeCreditProject/blob/main/practiceProjectModeling2.Rmd)
 The solution involves a multi-step process:
 
 Exploratory Data Analysis (EDA): Understand the data, identify patterns, and determine variable importance.
